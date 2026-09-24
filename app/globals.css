@@ -1,0 +1,126 @@
+:root {
+  --bg: #140b28;
+  --panel: #201238;
+  --wall: #4a3f7a;
+  --gold: #ffcf5c;
+  --teal: #4fd8c4;
+  --coral: #ff6b6b;
+  --text: #f2ecff;
+  --text-dim: #a89bd6;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body), system-ui, sans-serif;
+}
+
+.main {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  padding: 2rem 1rem;
+}
+
+.main h1 {
+  font-family: var(--font-display), sans-serif;
+  font-weight: 700;
+  font-size: clamp(1.75rem, 4vw, 2.5rem);
+  color: var(--gold);
+  margin: 0;
+}
+
+.game-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.hud {
+  display: flex;
+  gap: 1.5rem;
+  font-family: var(--font-display), sans-serif;
+  font-size: 1.1rem;
+  background: var(--panel);
+  padding: 0.6rem 1.4rem;
+  border-radius: 10px;
+  color: var(--text);
+}
+
+.hud span:nth-child(2) {
+  color: var(--coral);
+  letter-spacing: 2px;
+}
+
+.canvas-shell {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 0 0 3px var(--wall);
+}
+
+canvas {
+  display: block;
+  max-width: 90vw;
+  height: auto;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  background: rgba(20, 11, 40, 0.88);
+  font-family: var(--font-display), sans-serif;
+  font-size: 1.25rem;
+  text-align: center;
+  padding: 1rem;
+}
+
+.overlay button {
+  font-family: var(--font-body), sans-serif;
+  font-size: 1rem;
+  font-weight: 500;
+  padding: 0.6rem 1.4rem;
+  border-radius: 8px;
+  border: none;
+  background: var(--teal);
+  color: #0d2320;
+  cursor: pointer;
+}
+
+.overlay button:hover {
+  filter: brightness(1.08);
+}
+
+.overlay button:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.hint {
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  max-width: 32rem;
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
