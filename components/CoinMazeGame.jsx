@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { generateMaze, carveOpenings, randomPathCell, TILE } from "../lib/maze";
 import { LEVELS } from "../lib/levels";
-import { getScores, saveScore } from "../lib/leaderboard";
+import { getScores, saveScore, getLastName, setLastName, formatTime } from "../lib/leaderboard";
+import { sound } from "../lib/sound";
 
 const COLS = 17;
 const ROWS = 13;
@@ -85,7 +86,6 @@ export default function CoinMazeGame() {
   const livesRef = useRef(STARTING_LIVES);
   const statusRef = useRef("playing"); // playing | levelComplete | won | lost
   const scoreRef = useRef(0);
-  const savedRef = useRef(false);
 
   const heldKeysRef = useRef([]); // ordered list of currently-held direction names
   const lastMoveRef = useRef(0);
@@ -94,14 +94,26 @@ export default function CoinMazeGame() {
   const shieldUntilRef = useRef(0);
   const rafRef = useRef(null);
 
+  // Speedrun timer: accumulates while status === "playing" and pauses
+  // automatically whenever it isn't (level-complete screen, game over, etc).
+  const elapsedMsRef = useRef(0);
+  const runningSinceRef = useRef(null);
+  const lastDisplayUpdateRef = useRef(0);
+
   const [score, setScore] = useState(0);
   const [lives, setLives] = useState(STARTING_LIVES);
   const [status, setStatus] = useState("playing");
   const [coinsLeft, setCoinsLeft] = useState(LEVELS[0].coinCount);
   const [levelLabel, setLevelLabel] = useState(LEVELS[0].label);
+  const [elapsedDisplay, setElapsedDisplay] = useState("0:00");
   const [scores, setScores] = useState([]);
+  const [nameInput, setNameInput] = useState("");
+  const [runSaved, setRunSaved] = useState(false);
 
-  useEffect(() => setScores(getScores()), []);
+  useEffect(() => {
+    setScores(getScores());
+    setNameInput(getLastName());
+  }, []);
 
   const isWall = useCallback((x, y) => {
     const { maze } = levelRef.current;
@@ -124,10 +136,14 @@ export default function CoinMazeGame() {
     scoreRef.current = 0;
     livesRef.current = STARTING_LIVES;
     statusRef.current = "playing";
-    savedRef.current = false;
+    elapsedMsRef.current = 0;
+    runningSinceRef.current = null;
+    lastDisplayUpdateRef.current = 0;
     setScore(0);
     setLives(STARTING_LIVES);
     setStatus("playing");
+    setElapsedDisplay("0:00");
+    setRunSaved(false);
     loadLevel(0);
   }, [loadLevel]);
 
@@ -138,14 +154,26 @@ export default function CoinMazeGame() {
     loadLevel(next);
   }, [loadLevel]);
 
-  const finishRun = useCallback((finalStatus) => {
+  // Freezes the timer and records the final status; called with the
+  // animation-frame timestamp so the elapsed time is exact at this instant.
+  const finishRun = useCallback((finalStatus, now) => {
+    if (runningSinceRef.current !== null) {
+      elapsedMsRef.current += now - runningSinceRef.current;
+      runningSinceRef.current = null;
+    }
+    setElapsedDisplay(formatTime(elapsedMsRef.current));
     statusRef.current = finalStatus;
     setStatus(finalStatus);
-    if (!savedRef.current) {
-      savedRef.current = true;
-      setScores(saveScore(scoreRef.current));
-    }
+    if (finalStatus === "won") sound.victory();
+    if (finalStatus === "lost") sound.gameOver();
   }, []);
+
+  const handleSaveScore = useCallback(() => {
+    const cleanName = nameInput.trim().slice(0, 12) || "Player";
+    setLastName(cleanName);
+    setScores(saveScore({ name: cleanName, score: scoreRef.current, timeMs: elapsedMsRef.current }));
+    setRunSaved(true);
+  }, [nameInput]);
 
   // Keyboard: track which direction keys are currently held.
   useEffect(() => {
@@ -196,15 +224,17 @@ export default function CoinMazeGame() {
 
     if (coins.has(key)) {
       coins.delete(key);
+      sound.coin();
       scoreRef.current += 10;
       setScore(scoreRef.current);
       setCoinsLeft(coins.size);
       if (coins.size === 0) {
         if (levelIndexRef.current + 1 < LEVELS.length) {
+          sound.levelComplete();
           statusRef.current = "levelComplete";
           setStatus("levelComplete");
         } else {
-          finishRun("won");
+          finishRun("won", now);
         }
         return;
       }
@@ -213,12 +243,13 @@ export default function CoinMazeGame() {
     if (powerups.has(key)) {
       const p = powerups.get(key);
       powerups.delete(key);
+      sound.powerup();
       if (p.kind === "speed") speedBoostUntilRef.current = now + SPEED_BOOST_MS;
       else shieldUntilRef.current = now + SHIELD_MS;
     }
   }
 
-  // Main loop: movement pacing, enemy AI, collisions, rendering.
+  // Main loop: movement pacing, enemy AI, collisions, timer, rendering.
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
@@ -242,10 +273,11 @@ export default function CoinMazeGame() {
       const hit = levelRef.current.enemies.some((e) => e.x === player.x && e.y === player.y);
       if (!hit) return;
 
+      sound.hit();
       livesRef.current -= 1;
       if (livesRef.current <= 0) {
         setLives(0);
-        finishRun("lost");
+        finishRun("lost", now);
       } else {
         playerRef.current = { ...START };
         setLives(livesRef.current);
@@ -309,6 +341,12 @@ export default function CoinMazeGame() {
 
     function loop(timestamp) {
       if (statusRef.current === "playing") {
+        if (runningSinceRef.current === null) runningSinceRef.current = timestamp;
+        if (timestamp - lastDisplayUpdateRef.current > 200) {
+          setElapsedDisplay(formatTime(elapsedMsRef.current + (timestamp - runningSinceRef.current)));
+          lastDisplayUpdateRef.current = timestamp;
+        }
+
         const interval = speedBoostUntilRef.current > timestamp ? BOOST_MOVE_MS : NORMAL_MOVE_MS;
         if (timestamp - lastMoveRef.current > interval) {
           const activeName = heldKeysRef.current[heldKeysRef.current.length - 1];
@@ -325,6 +363,9 @@ export default function CoinMazeGame() {
           checkEnemyCollision(timestamp);
           lastEnemyMoveRef.current = timestamp;
         }
+      } else if (runningSinceRef.current !== null) {
+        elapsedMsRef.current += timestamp - runningSinceRef.current;
+        runningSinceRef.current = null;
       }
       draw(timestamp);
       rafRef.current = requestAnimationFrame(loop);
@@ -340,6 +381,7 @@ export default function CoinMazeGame() {
       <div className="hud">
         <span>{levelLabel}</span>
         <span>Score {score}</span>
+        <span>{elapsedDisplay}</span>
         <span>{"● ".repeat(lives).trim() || "—"}</span>
         <span>Coins left {coinsLeft}</span>
       </div>
@@ -350,19 +392,29 @@ export default function CoinMazeGame() {
           <div className="overlay">
             {status === "levelComplete" && (
               <>
-                <p>Level cleared</p>
+                <p>Level cleared — {elapsedDisplay} elapsed</p>
                 <button onClick={advanceLevel}>Next level</button>
               </>
             )}
-            {status === "won" && (
+            {(status === "won" || status === "lost") && (
               <>
-                <p>All levels cleared — final score {score}</p>
-                <button onClick={resetGame}>Play again</button>
-              </>
-            )}
-            {status === "lost" && (
-              <>
-                <p>Caught by an enemy — final score {score}</p>
+                <p>
+                  {status === "won" ? "All levels cleared" : "Caught by an enemy"} — score {score} in {elapsedDisplay}
+                </p>
+                {!runSaved ? (
+                  <div className="save-score">
+                    <input
+                      type="text"
+                      maxLength={12}
+                      value={nameInput}
+                      onChange={(e) => setNameInput(e.target.value)}
+                      placeholder="Your name"
+                    />
+                    <button onClick={handleSaveScore}>Save score</button>
+                  </div>
+                ) : (
+                  <p className="hint">Saved to your top scores.</p>
+                )}
                 <button onClick={resetGame}>Play again</button>
               </>
             )}
@@ -399,8 +451,9 @@ export default function CoinMazeGame() {
           <ol>
             {scores.map((entry, i) => (
               <li key={i}>
-                <span>{entry.score}</span>
-                <span>{entry.date}</span>
+                <span>{entry.name || "Player"}</span>
+                <span>{entry.score} pts</span>
+                <span>{formatTime(entry.timeMs)}</span>
               </li>
             ))}
           </ol>
