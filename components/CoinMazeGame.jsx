@@ -31,6 +31,7 @@ const MAGNET_MS = 7000;
 const MAGNET_RADIUS = 2.2;
 const INVINCIBLE_MS = 6000;
 const INVINCIBLE_KILL_SCORE = 25;
+const VISIBILITY_RADIUS = 3.2;
 
 const POWERUP_KINDS = ["speed", "shield", "life", "magnet", "bomb", "invincible"];
 const POWERUP_COLORS = {
@@ -40,6 +41,12 @@ const POWERUP_COLORS = {
   magnet: "#c792ea",
   bomb: "#ff9f43",
   invincible: "#ffe066",
+};
+
+const DIFFICULTY_PRESETS = {
+  easy: { enemyCountMult: 0.5, enemySpeedMult: 0.75 },
+  normal: { enemyCountMult: 1, enemySpeedMult: 1 },
+  hard: { enemyCountMult: 1.5, enemySpeedMult: 1.5 },
 };
 
 const DIRECTIONS = [
@@ -106,7 +113,7 @@ function buildLevel(levelIndex, settings) {
     });
   }
 
-  return { maze, coins, powerups, enemies, enemyMoveMs };
+  return { maze, coins, powerups, enemies, enemyMoveMs, revealed: new Array(COLS * ROWS).fill(false) };
 }
 
 export default function CoinMazeGame() {
@@ -149,17 +156,20 @@ export default function CoinMazeGame() {
   const [lastLevelTime, setLastLevelTime] = useState(null); // { ms, improved }
   const [nameInput, setNameInput] = useState("");
   const [runSaved, setRunSaved] = useState(false);
-  const [settings, setSettings] = useState({ enemyCountMult: 1, enemySpeedMult: 1 });
+  const [settings, setSettings] = useState({ ...DEFAULT_SETTINGS });
 
-  // One-time setup: load stored settings/name/best-times, and re-apply
-  // stored difficulty settings if they differ from the defaults already
-  // used for the initial synchronous level build above. Also try the
-  // shared leaderboard before falling back to the local one.
+  // One-time setup: load stored settings/name/best-times, re-apply stored
+  // difficulty settings if they differ from the defaults already used for
+  // the initial synchronous level build above, and try the shared
+  // leaderboard before falling back to the local one.
   useEffect(() => {
     const stored = getSettings();
     settingsRef.current = stored;
     setSettings(stored);
-    if (stored.enemyCountMult !== DEFAULT_SETTINGS.enemyCountMult || stored.enemySpeedMult !== DEFAULT_SETTINGS.enemySpeedMult) {
+    if (
+      stored.enemyCountMult !== DEFAULT_SETTINGS.enemyCountMult ||
+      stored.enemySpeedMult !== DEFAULT_SETTINGS.enemySpeedMult
+    ) {
       loadLevel(0);
     }
 
@@ -235,6 +245,19 @@ export default function CoinMazeGame() {
     setSettings(next);
     saveSettings(next);
   }, []);
+
+  const applyPreset = useCallback((key) => {
+    const next = { ...settingsRef.current, ...DIFFICULTY_PRESETS[key] };
+    settingsRef.current = next;
+    setSettings(next);
+    saveSettings(next);
+  }, []);
+
+  const activePreset = Object.keys(DIFFICULTY_PRESETS).find(
+    (key) =>
+      DIFFICULTY_PRESETS[key].enemyCountMult === settings.enemyCountMult &&
+      DIFFICULTY_PRESETS[key].enemySpeedMult === settings.enemySpeedMult
+  );
 
   // Folds the currently-running stint into the accumulator (if any) and
   // returns the total elapsed ms at this instant. Safe to call whenever
@@ -452,6 +475,39 @@ export default function CoinMazeGame() {
       }
     }
 
+    // Marks every cell within VISIBILITY_RADIUS of the player as
+    // permanently revealed, then returns the current visibility test used
+    // to decide what stays fully lit this frame.
+    function updateFog() {
+      const revealed = levelRef.current.revealed;
+      const render = playerRenderRef.current;
+      for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+          const dx = x - render.x;
+          const dy = y - render.y;
+          if (dx * dx + dy * dy <= VISIBILITY_RADIUS * VISIBILITY_RADIUS) {
+            revealed[y * COLS + x] = true;
+          }
+        }
+      }
+    }
+
+    function drawFog(now) {
+      if (!settingsRef.current.fogOfWar) return;
+      const revealed = levelRef.current.revealed;
+      const render = playerRenderRef.current;
+      for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+          const dx = x - render.x;
+          const dy = y - render.y;
+          if (dx * dx + dy * dy <= VISIBILITY_RADIUS * VISIBILITY_RADIUS) continue; // fully lit, no overlay
+          ctx.fillStyle = revealed[y * COLS + x] ? "rgba(10,4,26,0.55)" : "rgba(10,4,26,0.96)";
+          ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+        }
+      }
+      void now; // reserved for a future pulsing-light effect
+    }
+
     function draw(now) {
       const { maze, coins, powerups, enemies } = levelRef.current;
 
@@ -494,6 +550,8 @@ export default function CoinMazeGame() {
       ctx.arc(render.x * CELL + CELL / 2, render.y * CELL + CELL / 2, CELL * 0.34, 0, Math.PI * 2);
       ctx.fill();
 
+      drawFog(now);
+
       ctx.font = "13px sans-serif";
       ctx.textAlign = "right";
       let badgeY = 18;
@@ -516,6 +574,7 @@ export default function CoinMazeGame() {
       const dt = lastFrameTimeRef.current ? Math.min(0.05, (timestamp - lastFrameTimeRef.current) / 1000) : 0;
       lastFrameTimeRef.current = timestamp;
       updateSmoothing(dt);
+      updateFog();
 
       if (statusRef.current === "playing") {
         if (runningSinceRef.current === null) runningSinceRef.current = timestamp;
@@ -554,8 +613,6 @@ export default function CoinMazeGame() {
     return () => cancelAnimationFrame(rafRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isWall, finishRun]);
-
-  if (!levelRef.current) return null;
 
   return (
     <div className="game-wrap">
@@ -629,6 +686,17 @@ export default function CoinMazeGame() {
       </p>
 
       <div className="settings">
+        <div className="preset-row">
+          {Object.keys(DIFFICULTY_PRESETS).map((key) => (
+            <button
+              key={key}
+              className={activePreset === key ? "preset-active" : ""}
+              onClick={() => applyPreset(key)}
+            >
+              {key[0].toUpperCase() + key.slice(1)}
+            </button>
+          ))}
+        </div>
         <label>
           Enemies x{settings.enemyCountMult.toFixed(2)}
           <input
@@ -651,7 +719,15 @@ export default function CoinMazeGame() {
             onChange={(e) => updateSetting("enemySpeedMult", Number(e.target.value))}
           />
         </label>
-        <p className="hint">Applies to the next level or a new game, not the level in progress.</p>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={settings.fogOfWar}
+            onChange={(e) => updateSetting("fogOfWar", e.target.checked)}
+          />
+          Fog of war
+        </label>
+        <p className="hint">Difficulty applies to the next level or a new game, not the level in progress.</p>
       </div>
 
       <div className="leaderboard">
