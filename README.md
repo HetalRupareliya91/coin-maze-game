@@ -12,6 +12,12 @@ npm run dev
 
 Then open http://localhost:3000.
 
+Optional: for a shared leaderboard that persists on any host (including
+serverless), copy `.env.example` to `.env.local` and set `DATABASE_URL` to
+a Postgres connection string (a free tier from Neon, Supabase, or Railway
+all work fine). Without it, the app still works — it just uses a JSON file
+locally, or per-device `localStorage` if even that isn't writable.
+
 ## Controls
 
 - Arrow keys, WASD, or the on-screen D-pad (shown automatically on touch
@@ -24,8 +30,13 @@ Then open http://localhost:3000.
   a few seconds — touch an enemy while invincible to destroy it for bonus
   points instead of taking damage
 - Avoid the red enemies otherwise — 3 hits and it's game over
-- Difficulty sliders let you scale enemy count and enemy speed; changes
-  apply from the next level or a fresh game, not mid-level
+- Difficulty sliders let you scale enemy count and enemy speed, plus quick
+  Easy/Normal/Hard presets; changes apply from the next level or a fresh
+  game, not mid-level
+- Fog of war (toggleable) reveals the maze in a radius around you; cells
+  you've already seen stay dimly visible, unexplored ones stay dark —
+  turn it off in the settings panel if you'd rather see the whole level
+  at once
 - A speedrun timer runs while you play and pauses on every non-playing
   screen, so level-clear and game-over pauses don't count against you
 - Your best clear time per level is tracked separately and shown below
@@ -52,25 +63,26 @@ Then open http://localhost:3000.
   high score list (`name`, `score`, `timeMs`), a remembered last-used name,
   and a per-level best-time record.
 - `lib/onlineLeaderboard.js` + `app/api/leaderboard/route.js` — a shared
-  leaderboard: a small Next.js API route backed by a JSON file
-  (`data/leaderboard.json`, git-ignored), with a client wrapper that
-  resolves to `null` on any failure so the app can fall back to
-  `lib/leaderboard.js` automatically. **Caveat:** the JSON-file write only
-  persists on a host with a writable filesystem at runtime (a VPS, or
-  `next start` on your own server). Typical serverless deployments (e.g. a
-  default Vercel deployment) have a read-only filesystem in production, so
-  writes there won't persist between requests — the app still works, it
-  just quietly falls back to the local leaderboard in that case. Swapping
-  in a real database (e.g. a hosted Postgres/SQLite/Redis) behind this same
-  API route would make it persist everywhere.
-- `lib/settings.js` — `localStorage`-backed difficulty multipliers (enemy
-  count, enemy speed).
+  leaderboard. The API route uses Postgres (`lib/db/postgres.js`) when a
+  `DATABASE_URL` env var is set (see `.env.example`), otherwise it falls
+  back to a JSON file (`data/leaderboard.json`, git-ignored). The client
+  wrapper resolves to `null` on any failure so the app can fall back
+  further, to the per-device `lib/leaderboard.js` store, if neither backend
+  is reachable. The JSON-file path only persists on a host with a writable
+  filesystem at runtime (a VPS, or `next start` on your own server) —
+  typical serverless deployments have a read-only filesystem in production,
+  so setting `DATABASE_URL` to any hosted Postgres (Neon, Supabase, Railway,
+  etc. all have free tiers) is what makes the shared leaderboard actually
+  persist there.
+- `lib/settings.js` — `localStorage`-backed difficulty settings: enemy
+  count/speed multipliers and a fog-of-war toggle.
 - `lib/sound.js` — short Web Audio API oscillator tones for pickups, each
   power-up type, hits, and level/game outcomes — no audio files to load.
 - `components/CoinMazeGame.jsx` — the game itself: held-direction movement
   (keyboard or the touch D-pad both feed the same mechanism), a
   `requestAnimationFrame` loop that paces movement/enemies/the timer,
-  smooths player and enemy render positions, and redraws the canvas,
+  smooths player and enemy render positions, tracks which cells have been
+  revealed for the fog-of-war overlay, and redraws the canvas,
   coin/power-up collection (including the magnet's proximity auto-collect),
   collision detection (including invincibility's enemy-destroying variant),
   level progression, and win/lose state.
@@ -78,11 +90,11 @@ Then open http://localhost:3000.
   the leaderboard API route under `app/api/`).
 
 Game state that changes every frame (player/enemy logical *and* rendered
-positions, active power-ups, the running timer) is kept in refs rather
-than React state, so the render loop doesn't fight React's re-render
-cycle. React state (`score`, `lives`, `status`, the level label, the
-leaderboard, best times, settings) is only updated when something the
-player needs to see on screen actually changes.
+positions, active power-ups, the running timer, which cells are revealed)
+is kept in refs rather than React state, so the render loop doesn't fight
+React's re-render cycle. React state (`score`, `lives`, `status`, the level
+label, the leaderboard, best times, settings) is only updated when
+something the player needs to see on screen actually changes.
 
 Movement stays grid-based for all logic (collisions, coin pickup, walls):
 `playerRef`/`enemy.x,y` are always whole cells. A second position
@@ -91,9 +103,16 @@ every frame using frame-rate-independent exponential smoothing
 (`1 - Math.exp(-dt * rate)`), and only that smoothed position is drawn —
 so the game feels fluid without any of the grid logic having to change.
 
+Fog of war works the same way conceptually: each level keeps a `revealed`
+array (one flag per cell). Every frame, any cell within `VISIBILITY_RADIUS`
+of the player's smoothed position is marked revealed, permanently. When
+drawing, cells outside that radius get a dark overlay — nearly opaque if
+never revealed, semi-transparent (dimly "remembered") if they have been.
+Turning the setting off just skips drawing that overlay; nothing about the
+underlying maze data changes.
+
 ## Ideas for extending it further
 
-- A real database behind the shared leaderboard so it persists on any host
-- More power-up types (a minimap reveal, a decoy)
-- A minimap or fog-of-war for the larger levels
-- Difficulty presets (Easy/Normal/Hard) in addition to the raw sliders
+- More power-up types (a decoy, a brief maze-wide light pulse)
+- A gentle light-radius pulse tied to the timer, for atmosphere
+- Per-level difficulty presets tuned specifically to each level's layout
