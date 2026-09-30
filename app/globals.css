@@ -159,6 +159,31 @@ button:focus-visible {
   color: var(--gold);
 }
 
+.source-tag {
+  font-family: var(--font-body), sans-serif;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--text-dim);
+  margin-left: 0.35rem;
+}
+
+.settings {
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 0.75rem 1.25rem;
+  min-width: 14rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.settings label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+}
+
 .leaderboard ol {
   list-style: decimal inside;
   margin: 0;
