@@ -184,6 +184,34 @@ button:focus-visible {
   font-size: 0.9rem;
 }
 
+.preset-row {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.preset-row button {
+  font-family: var(--font-body), sans-serif;
+  font-size: 0.85rem;
+  border: 1px solid var(--wall);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  padding: 0.3rem 0.7rem;
+  cursor: pointer;
+}
+
+.preset-row button.preset-active {
+  background: var(--teal);
+  color: #0d2320;
+  border-color: var(--teal);
+}
+
+.checkbox-row {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 0.5rem !important;
+}
+
 .leaderboard ol {
   list-style: decimal inside;
   margin: 0;
