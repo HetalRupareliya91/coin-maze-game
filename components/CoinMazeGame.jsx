@@ -12,6 +12,8 @@ import {
   getBestLevelTimes,
   maybeUpdateBestLevelTime,
 } from "../lib/leaderboard";
+import { fetchOnlineScores, submitOnlineScore } from "../lib/onlineLeaderboard";
+import { getSettings, saveSettings, DEFAULT_SETTINGS } from "../lib/settings";
 import { sound } from "../lib/sound";
 
 const COLS = 17;
@@ -27,9 +29,18 @@ const SPEED_BOOST_MS = 6000;
 const SHIELD_MS = 6000;
 const MAGNET_MS = 7000;
 const MAGNET_RADIUS = 2.2;
+const INVINCIBLE_MS = 6000;
+const INVINCIBLE_KILL_SCORE = 25;
 
-const POWERUP_KINDS = ["speed", "shield", "life", "magnet"];
-const POWERUP_COLORS = { speed: "#7ee787", shield: "#7dd3fc", life: "#ff8fab", magnet: "#c792ea" };
+const POWERUP_KINDS = ["speed", "shield", "life", "magnet", "bomb", "invincible"];
+const POWERUP_COLORS = {
+  speed: "#7ee787",
+  shield: "#7dd3fc",
+  life: "#ff8fab",
+  magnet: "#c792ea",
+  bomb: "#ff9f43",
+  invincible: "#ffe066",
+};
 
 const DIRECTIONS = [
   { dx: 0, dy: -1 },
@@ -56,10 +67,13 @@ function cellKey(x, y) {
   return `${x},${y}`;
 }
 
-function buildLevel(levelIndex) {
+function buildLevel(levelIndex, settings) {
   const def = LEVELS[levelIndex];
   const base = generateMaze(COLS, ROWS);
   const maze = carveOpenings(base, def.openExtra);
+
+  const enemyCount = Math.max(1, Math.round(def.enemyCount * settings.enemyCountMult));
+  const enemyMoveMs = Math.max(120, Math.round(def.enemyMoveIntervalMs / settings.enemySpeedMult));
 
   const used = new Set([cellKey(START.x, START.y)]);
 
@@ -80,7 +94,7 @@ function buildLevel(levelIndex) {
   }
 
   const enemies = [];
-  while (enemies.length < def.enemyCount) {
+  while (enemies.length < enemyCount) {
     const cell = randomPathCell(maze, COLS, ROWS, used);
     used.add(cellKey(cell.x, cell.y));
     enemies.push({
@@ -92,13 +106,14 @@ function buildLevel(levelIndex) {
     });
   }
 
-  return { maze, coins, powerups, enemies, enemyMoveMs: def.enemyMoveIntervalMs };
+  return { maze, coins, powerups, enemies, enemyMoveMs };
 }
 
 export default function CoinMazeGame() {
   const canvasRef = useRef(null);
   const levelIndexRef = useRef(0);
-  const levelRef = useRef(buildLevel(0));
+  const settingsRef = useRef({ ...DEFAULT_SETTINGS });
+  const levelRef = useRef(buildLevel(0, DEFAULT_SETTINGS));
   const playerRef = useRef({ ...START });
   const playerRenderRef = useRef({ ...START }); // smoothed visual position
   const livesRef = useRef(STARTING_LIVES);
@@ -112,6 +127,7 @@ export default function CoinMazeGame() {
   const speedBoostUntilRef = useRef(0);
   const shieldUntilRef = useRef(0);
   const magnetUntilRef = useRef(0);
+  const invincibleUntilRef = useRef(0);
   const rafRef = useRef(null);
 
   // Speedrun timer: accumulates while status === "playing" and pauses
@@ -128,15 +144,44 @@ export default function CoinMazeGame() {
   const [levelLabel, setLevelLabel] = useState(LEVELS[0].label);
   const [elapsedDisplay, setElapsedDisplay] = useState("0:00");
   const [scores, setScores] = useState([]);
+  const [leaderboardSource, setLeaderboardSource] = useState("local"); // "online" | "local"
   const [bestTimes, setBestTimes] = useState(() => Array(LEVELS.length).fill(null));
   const [lastLevelTime, setLastLevelTime] = useState(null); // { ms, improved }
   const [nameInput, setNameInput] = useState("");
   const [runSaved, setRunSaved] = useState(false);
+  const [settings, setSettings] = useState({ enemyCountMult: 1, enemySpeedMult: 1 });
 
+  // One-time setup: load stored settings/name/best-times, and re-apply
+  // stored difficulty settings if they differ from the defaults already
+  // used for the initial synchronous level build above. Also try the
+  // shared leaderboard before falling back to the local one.
   useEffect(() => {
-    setScores(getScores());
+    const stored = getSettings();
+    settingsRef.current = stored;
+    setSettings(stored);
+    if (stored.enemyCountMult !== DEFAULT_SETTINGS.enemyCountMult || stored.enemySpeedMult !== DEFAULT_SETTINGS.enemySpeedMult) {
+      loadLevel(0);
+    }
+
     setNameInput(getLastName());
     setBestTimes(getBestLevelTimes(LEVELS.length));
+
+    let cancelled = false;
+    (async () => {
+      const online = await fetchOnlineScores();
+      if (cancelled) return;
+      if (online) {
+        setScores(online);
+        setLeaderboardSource("online");
+      } else {
+        setScores(getScores());
+        setLeaderboardSource("local");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const isWall = useCallback((x, y) => {
@@ -147,13 +192,14 @@ export default function CoinMazeGame() {
 
   const loadLevel = useCallback((index) => {
     levelIndexRef.current = index;
-    levelRef.current = buildLevel(index);
+    levelRef.current = buildLevel(index, settingsRef.current);
     playerRef.current = { ...START };
     playerRenderRef.current = { ...START };
     lastEnemyMoveRef.current = 0;
     speedBoostUntilRef.current = 0;
     shieldUntilRef.current = 0;
     magnetUntilRef.current = 0;
+    invincibleUntilRef.current = 0;
     levelStartAccumRef.current = elapsedMsRef.current;
     setCoinsLeft(LEVELS[index].coinCount);
     setLevelLabel(LEVELS[index].label);
@@ -183,6 +229,13 @@ export default function CoinMazeGame() {
     loadLevel(next);
   }, [loadLevel]);
 
+  const updateSetting = useCallback((key, value) => {
+    const next = { ...settingsRef.current, [key]: value };
+    settingsRef.current = next;
+    setSettings(next);
+    saveSettings(next);
+  }, []);
+
   // Folds the currently-running stint into the accumulator (if any) and
   // returns the total elapsed ms at this instant. Safe to call whenever
   // gameplay pauses, whether that's a level clear, a win, or a loss.
@@ -208,10 +261,19 @@ export default function CoinMazeGame() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleSaveScore = useCallback(() => {
+  const handleSaveScore = useCallback(async () => {
     const cleanName = nameInput.trim().slice(0, 12) || "Player";
     setLastName(cleanName);
-    setScores(saveScore({ name: cleanName, score: scoreRef.current, timeMs: elapsedMsRef.current }));
+    const entry = { name: cleanName, score: scoreRef.current, timeMs: elapsedMsRef.current };
+
+    const online = await submitOnlineScore(entry);
+    if (online) {
+      setScores(online);
+      setLeaderboardSource("online");
+    } else {
+      setScores(saveScore(entry));
+      setLeaderboardSource("local");
+    }
     setRunSaved(true);
   }, [nameInput]);
 
@@ -308,6 +370,12 @@ export default function CoinMazeGame() {
       } else if (p.kind === "magnet") {
         sound.magnet();
         magnetUntilRef.current = now + MAGNET_MS;
+      } else if (p.kind === "bomb") {
+        sound.bomb();
+        levelRef.current.enemies = [];
+      } else if (p.kind === "invincible") {
+        sound.invincible();
+        invincibleUntilRef.current = now + INVINCIBLE_MS;
       }
     }
   }
@@ -344,10 +412,20 @@ export default function CoinMazeGame() {
     }
 
     function checkEnemyCollision(now) {
-      if (shieldUntilRef.current > now) return;
       const player = playerRef.current;
-      const hit = levelRef.current.enemies.some((e) => e.x === player.x && e.y === player.y);
-      if (!hit) return;
+      const enemies = levelRef.current.enemies;
+      const hitIndex = enemies.findIndex((e) => e.x === player.x && e.y === player.y);
+      if (hitIndex === -1) return;
+
+      if (invincibleUntilRef.current > now) {
+        enemies.splice(hitIndex, 1);
+        sound.powerup();
+        scoreRef.current += INVINCIBLE_KILL_SCORE;
+        setScore(scoreRef.current);
+        return;
+      }
+
+      if (shieldUntilRef.current > now) return;
 
       sound.hit();
       livesRef.current -= 1;
@@ -409,8 +487,9 @@ export default function CoinMazeGame() {
       }
 
       const render = playerRenderRef.current;
+      const invincible = invincibleUntilRef.current > now;
       const shielded = shieldUntilRef.current > now;
-      ctx.fillStyle = shielded ? "#7dd3fc" : "#4fd8c4";
+      ctx.fillStyle = invincible ? "#ffe066" : shielded ? "#7dd3fc" : "#4fd8c4";
       ctx.beginPath();
       ctx.arc(render.x * CELL + CELL / 2, render.y * CELL + CELL / 2, CELL * 0.34, 0, Math.PI * 2);
       ctx.fill();
@@ -422,6 +501,7 @@ export default function CoinMazeGame() {
         [speedBoostUntilRef.current, "#7ee787", "Speed"],
         [shieldUntilRef.current, "#7dd3fc", "Shield"],
         [magnetUntilRef.current, "#c792ea", "Magnet"],
+        [invincibleUntilRef.current, "#ffe066", "Invincible"],
       ];
       for (const [until, color, label] of badges) {
         if (until > now) {
@@ -474,6 +554,8 @@ export default function CoinMazeGame() {
     return () => cancelAnimationFrame(rafRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isWall, finishRun]);
+
+  if (!levelRef.current) return null;
 
   return (
     <div className="game-wrap">
@@ -542,12 +624,38 @@ export default function CoinMazeGame() {
       </div>
 
       <p className="hint">
-        Arrow keys, WASD, or the on-screen pad to move. Green = speed, blue = shield, pink = extra life, purple = coin
-        magnet.
+        Arrow keys, WASD, or the on-screen pad to move. Green = speed, blue = shield, pink = extra life, purple =
+        magnet, orange = bomb (clears enemies), gold = invincible (touch enemies to defeat them).
       </p>
 
+      <div className="settings">
+        <label>
+          Enemies x{settings.enemyCountMult.toFixed(2)}
+          <input
+            type="range"
+            min={0.5}
+            max={2}
+            step={0.25}
+            value={settings.enemyCountMult}
+            onChange={(e) => updateSetting("enemyCountMult", Number(e.target.value))}
+          />
+        </label>
+        <label>
+          Enemy speed x{settings.enemySpeedMult.toFixed(2)}
+          <input
+            type="range"
+            min={0.5}
+            max={2}
+            step={0.25}
+            value={settings.enemySpeedMult}
+            onChange={(e) => updateSetting("enemySpeedMult", Number(e.target.value))}
+          />
+        </label>
+        <p className="hint">Applies to the next level or a new game, not the level in progress.</p>
+      </div>
+
       <div className="leaderboard">
-        <h2>Top scores</h2>
+        <h2>Top scores <span className="source-tag">{leaderboardSource === "online" ? "shared" : "this device"}</span></h2>
         {scores.length === 0 ? (
           <p className="hint">No runs yet — finish a game to set the first score.</p>
         ) : (
