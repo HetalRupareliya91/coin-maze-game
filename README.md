@@ -38,6 +38,8 @@ locally, or per-device `localStorage` if even that isn't writable.
 - Fog of war (toggleable) reveals the maze in a gently pulsing radius
   around you, with a soft-edged glow rather than a hard circle; cells
   you've already seen stay dimly visible, unexplored ones stay dark
+- Press Escape or the ⏸ button to pause (and Resume or Restart from there);
+  the 🔊 button mutes/unmutes sound, remembered for next time
 - A speedrun timer runs while you play and pauses on every non-playing
   screen, so level-clear and game-over pauses don't count against you
 - Your best clear time per level is tracked separately and shown below
