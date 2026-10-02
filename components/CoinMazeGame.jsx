@@ -14,7 +14,7 @@ import {
 } from "../lib/leaderboard";
 import { fetchOnlineScores, submitOnlineScore } from "../lib/onlineLeaderboard";
 import { getSettings, saveSettings, DEFAULT_SETTINGS } from "../lib/settings";
-import { sound } from "../lib/sound";
+import { sound, isMuted, setMuted } from "../lib/sound";
 
 const COLS = 17;
 const ROWS = 13;
@@ -177,6 +177,7 @@ export default function CoinMazeGame() {
   const [nameInput, setNameInput] = useState("");
   const [runSaved, setRunSaved] = useState(false);
   const [settings, setSettings] = useState({ ...DEFAULT_SETTINGS });
+  const [muted, setMutedDisplay] = useState(false);
 
   // One-time setup: load stored settings/name/best-times, re-apply stored
   // difficulty settings if they differ from the defaults already used for
@@ -196,6 +197,7 @@ export default function CoinMazeGame() {
 
     setNameInput(getLastName());
     setBestTimes(getBestLevelTimes(LEVELS.length));
+    setMutedDisplay(isMuted());
 
     let cancelled = false;
     (async () => {
@@ -266,6 +268,22 @@ export default function CoinMazeGame() {
     settingsRef.current = next;
     setSettings(next);
     saveSettings(next);
+  }, []);
+
+  const togglePause = useCallback(() => {
+    if (statusRef.current === "playing") {
+      statusRef.current = "paused";
+      setStatus("paused");
+    } else if (statusRef.current === "paused") {
+      statusRef.current = "playing";
+      setStatus("playing");
+    }
+  }, []);
+
+  const toggleMute = useCallback(() => {
+    const next = !isMuted();
+    setMuted(next);
+    setMutedDisplay(next);
   }, []);
 
   const selectPreset = useCallback((key) => {
@@ -354,6 +372,10 @@ export default function CoinMazeGame() {
       heldKeysRef.current = heldKeysRef.current.filter((k) => k !== name);
     }
     function handleKeyDown(e) {
+      if (e.key === "Escape") {
+        togglePause();
+        return;
+      }
       const name = KEY_TO_NAME[e.key];
       if (!name) return;
       e.preventDefault();
@@ -682,12 +704,27 @@ export default function CoinMazeGame() {
         <span>{elapsedDisplay}</span>
         <span>{"● ".repeat(lives).trim() || "—"}</span>
         <span>Coins left {coinsLeft}</span>
+        {(status === "playing" || status === "paused") && (
+          <button className="icon-btn" onClick={togglePause} aria-label={status === "paused" ? "Resume" : "Pause"}>
+            {status === "paused" ? "▶" : "⏸"}
+          </button>
+        )}
+        <button className="icon-btn" onClick={toggleMute} aria-label={muted ? "Unmute" : "Mute"}>
+          {muted ? "🔇" : "🔊"}
+        </button>
       </div>
 
       <div className="canvas-shell">
         <canvas ref={canvasRef} width={COLS * CELL} height={ROWS * CELL} />
         {status !== "playing" && (
           <div className="overlay">
+            {status === "paused" && (
+              <>
+                <p>Paused</p>
+                <button onClick={togglePause}>Resume</button>
+                <button onClick={resetGame}>Restart</button>
+              </>
+            )}
             {status === "levelComplete" && (
               <>
                 <p>
@@ -743,7 +780,7 @@ export default function CoinMazeGame() {
       <p className="hint">
         Arrow keys, WASD, or the on-screen pad to move. Green = speed, blue = shield, pink = extra life, purple =
         magnet, orange = bomb (clears enemies), gold = invincible (touch enemies to defeat them), cyan = decoy (drops
-        a lure that nearby enemies chase instead of wandering).
+        a lure that nearby enemies chase instead of wandering). Press Escape or the ⏸ button to pause.
       </p>
 
       <div className="settings">
