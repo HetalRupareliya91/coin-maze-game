@@ -31,9 +31,15 @@ const MAGNET_MS = 7000;
 const MAGNET_RADIUS = 2.2;
 const INVINCIBLE_MS = 6000;
 const INVINCIBLE_KILL_SCORE = 25;
-const VISIBILITY_RADIUS = 3.2;
+const DECOY_MS = 8000;
+const DECOY_DETECT_RADIUS = 6;
 
-const POWERUP_KINDS = ["speed", "shield", "life", "magnet", "bomb", "invincible"];
+const VISIBILITY_RADIUS = 3.2;
+const PULSE_AMPLITUDE = 0.3;
+const PULSE_PERIOD_MS = 3000;
+const FOG_EDGE_SOFTNESS = 0.8;
+
+const POWERUP_KINDS = ["speed", "shield", "life", "magnet", "bomb", "invincible", "decoy"];
 const POWERUP_COLORS = {
   speed: "#7ee787",
   shield: "#7dd3fc",
@@ -41,6 +47,7 @@ const POWERUP_COLORS = {
   magnet: "#c792ea",
   bomb: "#ff9f43",
   invincible: "#ffe066",
+  decoy: "#22d3ee",
 };
 
 const DIFFICULTY_PRESETS = {
@@ -74,13 +81,25 @@ function cellKey(x, y) {
   return `${x},${y}`;
 }
 
+// Resolves the enemy count/speed multipliers to actually use: a named
+// preset looks up that level's own tuned values (falling back to the
+// flat global preset if a level doesn't define one), while "custom" uses
+// the raw slider values as-is, applied uniformly across every level.
+function resolveDifficulty(levelIndex, settings) {
+  if (settings.presetName === "custom") {
+    return { enemyCountMult: settings.enemyCountMult, enemySpeedMult: settings.enemySpeedMult };
+  }
+  return LEVELS[levelIndex].presets?.[settings.presetName] || DIFFICULTY_PRESETS[settings.presetName] || DIFFICULTY_PRESETS.normal;
+}
+
 function buildLevel(levelIndex, settings) {
   const def = LEVELS[levelIndex];
   const base = generateMaze(COLS, ROWS);
   const maze = carveOpenings(base, def.openExtra);
 
-  const enemyCount = Math.max(1, Math.round(def.enemyCount * settings.enemyCountMult));
-  const enemyMoveMs = Math.max(120, Math.round(def.enemyMoveIntervalMs / settings.enemySpeedMult));
+  const { enemyCountMult, enemySpeedMult } = resolveDifficulty(levelIndex, settings);
+  const enemyCount = Math.max(1, Math.round(def.enemyCount * enemyCountMult));
+  const enemyMoveMs = Math.max(120, Math.round(def.enemyMoveIntervalMs / enemySpeedMult));
 
   const used = new Set([cellKey(START.x, START.y)]);
 
@@ -135,6 +154,7 @@ export default function CoinMazeGame() {
   const shieldUntilRef = useRef(0);
   const magnetUntilRef = useRef(0);
   const invincibleUntilRef = useRef(0);
+  const decoyRef = useRef(null); // { x, y, until }
   const rafRef = useRef(null);
 
   // Speedrun timer: accumulates while status === "playing" and pauses
@@ -167,6 +187,7 @@ export default function CoinMazeGame() {
     settingsRef.current = stored;
     setSettings(stored);
     if (
+      stored.presetName !== DEFAULT_SETTINGS.presetName ||
       stored.enemyCountMult !== DEFAULT_SETTINGS.enemyCountMult ||
       stored.enemySpeedMult !== DEFAULT_SETTINGS.enemySpeedMult
     ) {
@@ -210,6 +231,7 @@ export default function CoinMazeGame() {
     shieldUntilRef.current = 0;
     magnetUntilRef.current = 0;
     invincibleUntilRef.current = 0;
+    decoyRef.current = null;
     levelStartAccumRef.current = elapsedMsRef.current;
     setCoinsLeft(LEVELS[index].coinCount);
     setLevelLabel(LEVELS[index].label);
@@ -246,18 +268,12 @@ export default function CoinMazeGame() {
     saveSettings(next);
   }, []);
 
-  const applyPreset = useCallback((key) => {
-    const next = { ...settingsRef.current, ...DIFFICULTY_PRESETS[key] };
+  const selectPreset = useCallback((key) => {
+    const next = { ...settingsRef.current, presetName: key };
     settingsRef.current = next;
     setSettings(next);
     saveSettings(next);
   }, []);
-
-  const activePreset = Object.keys(DIFFICULTY_PRESETS).find(
-    (key) =>
-      DIFFICULTY_PRESETS[key].enemyCountMult === settings.enemyCountMult &&
-      DIFFICULTY_PRESETS[key].enemySpeedMult === settings.enemySpeedMult
-  );
 
   // Folds the currently-running stint into the accumulator (if any) and
   // returns the total elapsed ms at this instant. Safe to call whenever
@@ -399,6 +415,9 @@ export default function CoinMazeGame() {
       } else if (p.kind === "invincible") {
         sound.invincible();
         invincibleUntilRef.current = now + INVINCIBLE_MS;
+      } else if (p.kind === "decoy") {
+        sound.decoy();
+        decoyRef.current = { x: nx, y: ny, until: now + DECOY_MS };
       }
     }
   }
@@ -421,10 +440,32 @@ export default function CoinMazeGame() {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
 
-    function moveEnemies() {
+    // While a decoy is active, any enemy within DECOY_DETECT_RADIUS of it
+    // greedily steps toward it instead of wandering randomly.
+    function moveEnemies(now) {
+      const decoy = decoyRef.current;
+      const decoyActive = decoy && decoy.until > now;
+
       for (const enemy of levelRef.current.enemies) {
         const options = DIRECTIONS.filter((d) => !isWall(enemy.x + d.dx, enemy.y + d.dy));
         if (options.length === 0) continue;
+
+        if (decoyActive && Math.hypot(enemy.x - decoy.x, enemy.y - decoy.y) <= DECOY_DETECT_RADIUS) {
+          let best = options[0];
+          let bestDist = Infinity;
+          for (const d of options) {
+            const dist = Math.hypot(enemy.x + d.dx - decoy.x, enemy.y + d.dy - decoy.y);
+            if (dist < bestDist) {
+              bestDist = dist;
+              best = d;
+            }
+          }
+          enemy.dir = best;
+          enemy.x += best.dx;
+          enemy.y += best.dy;
+          continue;
+        }
+
         const canContinue = options.some((d) => d.dx === enemy.dir.dx && d.dy === enemy.dir.dy);
         if (!canContinue || Math.random() < 0.3) {
           enemy.dir = options[Math.floor(Math.random() * options.length)];
@@ -475,9 +516,10 @@ export default function CoinMazeGame() {
       }
     }
 
-    // Marks every cell within VISIBILITY_RADIUS of the player as
-    // permanently revealed, then returns the current visibility test used
-    // to decide what stays fully lit this frame.
+    // Marks every cell within the base VISIBILITY_RADIUS as permanently
+    // revealed. Uses the fixed radius (not the pulsing one) so the light
+    // "breathing" is purely cosmetic and doesn't change how much of the
+    // level you end up exploring.
     function updateFog() {
       const revealed = levelRef.current.revealed;
       const render = playerRenderRef.current;
@@ -496,16 +538,21 @@ export default function CoinMazeGame() {
       if (!settingsRef.current.fogOfWar) return;
       const revealed = levelRef.current.revealed;
       const render = playerRenderRef.current;
+      const pulse = PULSE_AMPLITUDE * Math.sin((now / PULSE_PERIOD_MS) * Math.PI * 2);
+      const radius = VISIBILITY_RADIUS + pulse;
+
       for (let y = 0; y < ROWS; y++) {
         for (let x = 0; x < COLS; x++) {
-          const dx = x - render.x;
-          const dy = y - render.y;
-          if (dx * dx + dy * dy <= VISIBILITY_RADIUS * VISIBILITY_RADIUS) continue; // fully lit, no overlay
-          ctx.fillStyle = revealed[y * COLS + x] ? "rgba(10,4,26,0.55)" : "rgba(10,4,26,0.96)";
+          const dist = Math.hypot(x - render.x, y - render.y);
+          if (dist <= radius) continue; // fully lit, no overlay
+
+          const wasRevealed = revealed[y * COLS + x];
+          const maxAlpha = wasRevealed ? 0.55 : 0.96;
+          const edgeT = Math.min(1, (dist - radius) / FOG_EDGE_SOFTNESS);
+          ctx.fillStyle = `rgba(10,4,26,${(maxAlpha * edgeT).toFixed(3)})`;
           ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
         }
       }
-      void now; // reserved for a future pulsing-light effect
     }
 
     function draw(now) {
@@ -535,6 +582,16 @@ export default function CoinMazeGame() {
         ctx.fill();
       }
 
+      const decoy = decoyRef.current;
+      if (decoy && decoy.until > now) {
+        ctx.strokeStyle = "#e0f7ff";
+        ctx.lineWidth = 2;
+        const pulse = 0.28 + 0.06 * Math.sin(now / 150);
+        ctx.beginPath();
+        ctx.arc(decoy.x * CELL + CELL / 2, decoy.y * CELL + CELL / 2, CELL * pulse, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
       ctx.fillStyle = "#ff6b6b";
       for (const enemy of enemies) {
         ctx.beginPath();
@@ -560,6 +617,7 @@ export default function CoinMazeGame() {
         [shieldUntilRef.current, "#7dd3fc", "Shield"],
         [magnetUntilRef.current, "#c792ea", "Magnet"],
         [invincibleUntilRef.current, "#ffe066", "Invincible"],
+        [decoy && decoy.until, "#22d3ee", "Decoy"],
       ];
       for (const [until, color, label] of badges) {
         if (until > now) {
@@ -597,7 +655,7 @@ export default function CoinMazeGame() {
 
         const { enemyMoveMs } = levelRef.current;
         if (timestamp - lastEnemyMoveRef.current > enemyMoveMs) {
-          moveEnemies();
+          moveEnemies(timestamp);
           checkEnemyCollision(timestamp);
           lastEnemyMoveRef.current = timestamp;
         }
@@ -613,6 +671,8 @@ export default function CoinMazeGame() {
     return () => cancelAnimationFrame(rafRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isWall, finishRun]);
+
+  const presetKeys = ["easy", "normal", "hard", "custom"];
 
   return (
     <div className="game-wrap">
@@ -682,43 +742,53 @@ export default function CoinMazeGame() {
 
       <p className="hint">
         Arrow keys, WASD, or the on-screen pad to move. Green = speed, blue = shield, pink = extra life, purple =
-        magnet, orange = bomb (clears enemies), gold = invincible (touch enemies to defeat them).
+        magnet, orange = bomb (clears enemies), gold = invincible (touch enemies to defeat them), cyan = decoy (drops
+        a lure that nearby enemies chase instead of wandering).
       </p>
 
       <div className="settings">
         <div className="preset-row">
-          {Object.keys(DIFFICULTY_PRESETS).map((key) => (
+          {presetKeys.map((key) => (
             <button
               key={key}
-              className={activePreset === key ? "preset-active" : ""}
-              onClick={() => applyPreset(key)}
+              className={settings.presetName === key ? "preset-active" : ""}
+              onClick={() => selectPreset(key)}
             >
               {key[0].toUpperCase() + key.slice(1)}
             </button>
           ))}
         </div>
-        <label>
-          Enemies x{settings.enemyCountMult.toFixed(2)}
-          <input
-            type="range"
-            min={0.5}
-            max={2}
-            step={0.25}
-            value={settings.enemyCountMult}
-            onChange={(e) => updateSetting("enemyCountMult", Number(e.target.value))}
-          />
-        </label>
-        <label>
-          Enemy speed x{settings.enemySpeedMult.toFixed(2)}
-          <input
-            type="range"
-            min={0.5}
-            max={2}
-            step={0.25}
-            value={settings.enemySpeedMult}
-            onChange={(e) => updateSetting("enemySpeedMult", Number(e.target.value))}
-          />
-        </label>
+        {settings.presetName === "custom" ? (
+          <>
+            <label>
+              Enemies x{settings.enemyCountMult.toFixed(2)}
+              <input
+                type="range"
+                min={0.5}
+                max={2}
+                step={0.25}
+                value={settings.enemyCountMult}
+                onChange={(e) => updateSetting("enemyCountMult", Number(e.target.value))}
+              />
+            </label>
+            <label>
+              Enemy speed x{settings.enemySpeedMult.toFixed(2)}
+              <input
+                type="range"
+                min={0.5}
+                max={2}
+                step={0.25}
+                value={settings.enemySpeedMult}
+                onChange={(e) => updateSetting("enemySpeedMult", Number(e.target.value))}
+              />
+            </label>
+          </>
+        ) : (
+          <p className="hint">
+            Enemy count/speed are tuned per level for {settings.presetName[0].toUpperCase() + settings.presetName.slice(1)}{" "}
+            difficulty. Pick "Custom" for raw sliders applied the same on every level.
+          </p>
+        )}
         <label className="checkbox-row">
           <input
             type="checkbox"
