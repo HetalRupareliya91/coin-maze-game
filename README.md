@@ -28,15 +28,16 @@ locally, or per-device `localStorage` if even that isn't writable.
   that auto-collects nearby coins for a few seconds; orange is a bomb that
   instantly clears every enemy on the level; gold makes you invincible for
   a few seconds — touch an enemy while invincible to destroy it for bonus
-  points instead of taking damage
+  points instead of taking damage; cyan drops a decoy that nearby enemies
+  chase instead of wandering, buying you a window to slip past them
 - Avoid the red enemies otherwise — 3 hits and it's game over
-- Difficulty sliders let you scale enemy count and enemy speed, plus quick
-  Easy/Normal/Hard presets; changes apply from the next level or a fresh
-  game, not mid-level
-- Fog of war (toggleable) reveals the maze in a radius around you; cells
-  you've already seen stay dimly visible, unexplored ones stay dark —
-  turn it off in the settings panel if you'd rather see the whole level
-  at once
+- Easy/Normal/Hard difficulty presets are tuned per level (Level 3's
+  baseline is already fast, so its "Hard" is a smaller bump than Level 1's)
+  rather than one flat multiplier everywhere; pick "Custom" for raw
+  enemy-count/speed sliders applied the same on every level instead
+- Fog of war (toggleable) reveals the maze in a gently pulsing radius
+  around you, with a soft-edged glow rather than a hard circle; cells
+  you've already seen stay dimly visible, unexplored ones stay dark
 - A speedrun timer runs while you play and pauses on every non-playing
   screen, so level-clear and game-over pauses don't count against you
 - Your best clear time per level is tracked separately and shown below
