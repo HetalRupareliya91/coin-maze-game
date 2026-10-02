@@ -61,6 +61,20 @@ body {
   letter-spacing: 2px;
 }
 
+.icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 0 0.2rem;
+  line-height: 1;
+}
+
+.icon-btn:hover {
+  opacity: 0.75;
+}
+
 .canvas-shell {
   position: relative;
   border-radius: 12px;
